@@ -1,0 +1,599 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+cc-switch: switch Claude Code settings profiles
+
+Usage:
+  cc-switch [options] list
+  cc-switch [options] current
+  cc-switch [options] use <profile>
+  cc-switch [options] use <profile> [settings.json|profile-name]
+  cc-switch [options] use <settings.json>
+  cc-switch [options] add <profile> [settings.json|profile-name]
+  cc-switch [options] add <settings.json>
+  cc-switch [options] pick
+  cc-switch [options] path
+
+Options:
+  --project              Force project scope (./.claude/...)  — auto-selected when PWD has .claude/profiles/ or .claude/settings.local.json
+  --user                 Force user scope (~/.claude/...) even when a project config is present
+  --target <path>        Active settings file path. Default: ~/.claude/settings.json
+  --profiles <dir>       Profiles directory. Default: ~/.claude/profiles
+  --copy                 Copy profile into target instead of symlinking
+  --plain                Machine-readable output (no colors, no headers, no decoration)
+  --no-color             Disable color even on a TTY
+  -h, --help             Show this help
+
+Examples:
+  cc-switch use ~/.claude/settings.work.json    # add + activate in one step
+  cc-switch use gpt ~/.claude/settings.gpt.json # explicit profile name + source
+  cc-switch use work                            # switch to an already-imported profile
+  cc-switch list
+  cc-switch current
+  cc-switch pick                                # interactive picker (fzf if available)
+
+  # Register a profile without activating it
+  cc-switch add default ~/.claude/settings.default.json
+  cc-switch add gpt                             # auto-discover from known locations
+  cc-switch add ~/.claude/settings.gpt.json     # name derived from filename
+
+Project-local examples:
+  cc-switch --project use dev .claude/settings.dev.json   # add + activate
+  cc-switch --project use dev                             # switch by name
+  cc-switch --project add prod .claude/settings.prod.json
+  cc-switch --project add prod work                       # import from another profile name
+  cc-switch --project current
+USAGE
+}
+
+json_check() {
+  local file=$1
+  if command -v jq >/dev/null 2>&1; then
+    jq empty "$file" >/dev/null
+  else
+    python3 -m json.tool "$file" >/dev/null
+  fi
+}
+
+# Same intent as json_check but never throws — prints valid|invalid.
+json_status() {
+  local file=$1
+  if json_check "$file" >/dev/null 2>&1; then
+    printf 'valid'
+  else
+    printf 'invalid'
+  fi
+}
+
+# Replace $HOME prefix with ~ for prettier display. Pure cosmetic.
+tilde_path() {
+  local p=$1
+  if [[ -n "${HOME:-}" && "$p" == "$HOME"* ]]; then
+    printf '~%s' "${p#$HOME}"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+fmt_size() {
+  local bytes=$1
+  if (( bytes < 1024 )); then
+    printf '%d B' "$bytes"
+  elif (( bytes < 1024 * 1024 )); then
+    awk -v b="$bytes" 'BEGIN { printf "%.1f KB", b/1024 }'
+  else
+    awk -v b="$bytes" 'BEGIN { printf "%.1f MB", b/1024/1024 }'
+  fi
+}
+
+# Prefer GNU stat, fall back to BSD stat, finally to Python.
+file_size() {
+  local f=$1
+  stat -c '%s' "$f" 2>/dev/null && return
+  stat -f '%z' "$f" 2>/dev/null && return
+  python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$f"
+}
+
+file_mtime() {
+  local f=$1
+  local v
+  if v=$(stat -c '%y' "$f" 2>/dev/null); then
+    printf '%s\n' "${v%%.*}" | cut -c1-19
+    return
+  fi
+  if v=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$f" 2>/dev/null); then
+    printf '%s\n' "$v"
+    return
+  fi
+  python3 -c 'import os,sys,datetime; print(datetime.datetime.fromtimestamp(os.path.getmtime(sys.argv[1])).strftime("%Y-%m-%d %H:%M:%S"))' "$f"
+}
+
+# Color is opt-out: stdout-is-tty AND NO_COLOR unset AND --no-color/--plain absent.
+color_init() {
+  if [[ "$plain" -eq 1 || "$no_color" -eq 1 || ! -t 1 || -n "${NO_COLOR:-}" ]]; then
+    C_RESET=''; C_BOLD=''; C_DIM=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_CYAN=''; C_MAGENTA=''
+  else
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_DIM=$'\033[2m'
+    C_GREEN=$'\033[32m'
+    C_YELLOW=$'\033[33m'
+    C_RED=$'\033[31m'
+    C_CYAN=$'\033[36m'
+    C_MAGENTA=$'\033[35m'
+  fi
+}
+
+# Classify the active target. Sets globals: target_state, target_link, active_profile.
+#   target_state ∈ { absent, regular, broken, link-out, link-profile }
+#   target_link  = readlink target (for link-* states), else ''
+#   active_profile = profile name (for link-profile only), else ''
+classify_target() {
+  target_state=absent
+  target_link=''
+  active_profile=''
+
+  if [[ -L "$target" ]]; then
+    target_link=$(readlink "$target")
+    if [[ ! -e "$target" ]]; then
+      target_state=broken
+      return
+    fi
+    local resolved profiles_abs
+    resolved=$(abs_path "$target")
+    profiles_abs=$(abs_path "$profiles")
+    case "$resolved" in
+      "$profiles_abs"/*.json)
+        target_state=link-profile
+        active_profile=$(basename "$resolved" .json)
+        ;;
+      *)
+        target_state=link-out
+        ;;
+    esac
+  elif [[ -e "$target" ]]; then
+    target_state=regular
+  fi
+}
+
+abs_path() {
+  local path=$1
+  if command -v realpath >/dev/null 2>&1; then
+    if realpath -m "$path" >/dev/null 2>&1; then
+      realpath -m "$path"
+      return
+    fi
+    if realpath "$path" >/dev/null 2>&1; then
+      realpath "$path"
+      return
+    fi
+  fi
+  python3 - <<'PY' "$path"
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
+profile_name_from_file() {
+  local name
+  name=$(basename "$1" .json)
+  name=${name#settings.}
+  printf '%s\n' "$name"
+}
+
+resolve_named_source() {
+  local name=$1
+  local candidate
+  local candidates=(
+    "${base}/${name}.json"
+    "${base}/settings.${name}.json"
+    "${profiles}/${name}.json"
+    "${HOME}/.claude/profiles/${name}.json"
+    "${HOME}/.claude/${name}.json"
+    "${HOME}/.claude/settings.${name}.json"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+  done
+
+  return 1
+}
+
+source_from_arg() {
+  local arg=$1
+  if [[ -f "$arg" ]]; then
+    printf '%s\n' "$arg"
+    return 0
+  fi
+
+  if [[ "$arg" == */* || "$arg" == *.json ]]; then
+    return 1
+  fi
+
+  resolve_named_source "$arg"
+}
+
+mode=symlink
+plain=0
+no_color=0
+scope=user
+scope_explicit=0
+target_explicit=0
+profiles_explicit=0
+base=${HOME}/.claude
+target=${HOME}/.claude/settings.json
+profiles=${HOME}/.claude/profiles
+
+while (($#)); do
+  case "$1" in
+    --project)
+      scope=project
+      scope_explicit=1
+      base=${PWD}/.claude
+      target=${base}/settings.local.json
+      profiles=${base}/profiles
+      shift
+      ;;
+    --user)
+      scope=user
+      scope_explicit=1
+      base=${HOME}/.claude
+      target=${HOME}/.claude/settings.json
+      profiles=${HOME}/.claude/profiles
+      shift
+      ;;
+    --target)
+      [[ $# -ge 2 ]] || { echo 'Missing value for --target' >&2; exit 2; }
+      target=$2
+      target_explicit=1
+      shift 2
+      ;;
+    --profiles)
+      [[ $# -ge 2 ]] || { echo 'Missing value for --profiles' >&2; exit 2; }
+      profiles=$2
+      profiles_explicit=1
+      shift 2
+      ;;
+    --copy)
+      mode=copy
+      shift
+      ;;
+    --plain)
+      plain=1
+      shift
+      ;;
+    --no-color)
+      no_color=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+# Auto scope detection: when user did not pass --project/--user, look for a
+# project config in PWD. Don't override explicit --target/--profiles.
+if [[ $scope_explicit -eq 0 ]]; then
+  if [[ -d "${PWD}/.claude/profiles" || -e "${PWD}/.claude/settings.local.json" ]]; then
+    scope=project
+    [[ $target_explicit -eq 1 ]] || target=${PWD}/.claude/settings.local.json
+    [[ $profiles_explicit -eq 1 ]] || profiles=${PWD}/.claude/profiles
+    base=${PWD}/.claude
+    scope_auto=1
+  fi
+fi
+: "${scope_auto:=0}"
+
+color_init
+
+cmd=${1:-}
+[[ -n "$cmd" ]] || { usage >&2; exit 2; }
+shift || true
+
+case "$cmd" in
+  list)
+    classify_target
+    shopt -s nullglob
+    files=("$profiles"/*.json)
+    shopt -u nullglob
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+      [[ $plain -eq 1 ]] || echo "No profiles in $(tilde_path "$profiles")"
+      exit 0
+    fi
+
+    if [[ $plain -eq 1 ]]; then
+      for file in "${files[@]}"; do
+        name=$(basename "$file" .json)
+        if [[ "$target_state" == link-profile && "$name" == "$active_profile" ]]; then
+          printf '* %s\n' "$name"
+        else
+          printf '  %s\n' "$name"
+        fi
+      done
+      exit 0
+    fi
+
+    # Pretty table.
+    name_w=4; size_w=4
+    rows=()
+    for file in "${files[@]}"; do
+      name=$(basename "$file" .json)
+      bytes=$(file_size "$file")
+      size=$(fmt_size "$bytes")
+      mtime=$(file_mtime "$file")
+      path_disp=$(tilde_path "$file")
+      if [[ "$target_state" == link-profile && "$name" == "$active_profile" ]]; then
+        active=yes
+      else
+        active=no
+      fi
+      (( ${#name} > name_w )) && name_w=${#name}
+      (( ${#size} > size_w )) && size_w=${#size}
+      rows+=("$active"$'\t'"$name"$'\t'"$size"$'\t'"$mtime"$'\t'"$path_disp")
+    done
+
+    # Header.
+    printf '%b%s %-*s  %-*s  %-19s  %s%b\n' \
+      "$C_BOLD" ' ' "$name_w" 'NAME' "$size_w" 'SIZE' 'MTIME' 'PATH' "$C_RESET"
+
+    for row in "${rows[@]}"; do
+      IFS=$'\t' read -r active name size mtime path_disp <<<"$row"
+      pad_n=$((name_w - ${#name}))
+      pad_s=$((size_w - ${#size}))
+      if [[ "$active" == yes ]]; then
+        printf '%b*%b %b%s%b%*s  %-*s  %s  %b%s%b\n' \
+          "$C_GREEN" "$C_RESET" \
+          "$C_GREEN$C_BOLD" "$name" "$C_RESET" "$pad_n" '' \
+          "$size_w" "$size" "$mtime" \
+          "$C_DIM" "$path_disp" "$C_RESET"
+      else
+        printf '  %s%*s  %-*s  %s  %b%s%b\n' \
+          "$name" "$pad_n" '' \
+          "$size_w" "$size" "$mtime" \
+          "$C_DIM" "$path_disp" "$C_RESET"
+      fi
+    done
+
+    # Summary.
+    case "$target_state" in
+      link-profile) summary="active=${C_GREEN}${active_profile}${C_RESET}" ;;
+      link-out)     summary="active=${C_YELLOW}external${C_RESET} ($(tilde_path "$target_link"))" ;;
+      broken)       summary="active=${C_RED}broken symlink${C_RESET} -> $target_link" ;;
+      regular)      summary="active=${C_YELLOW}regular file${C_RESET} (unmanaged)" ;;
+      absent)       summary="active=${C_DIM}none${C_RESET}" ;;
+    esac
+    printf '\n%b%d profile%s%b · %b · target=%b%s%b · scope=%b%s%b\n' \
+      "$C_DIM" "${#files[@]}" "$([[ ${#files[@]} -eq 1 ]] || echo s)" "$C_RESET" \
+      "$summary" \
+      "$C_CYAN" "$(tilde_path "$target")" "$C_RESET" \
+      "$C_CYAN" "${scope}$([[ $scope_auto -eq 1 ]] && echo ' (auto)')" "$C_RESET"
+    ;;
+
+  current)
+    classify_target
+    if [[ $plain -eq 1 ]]; then
+      case "$target_state" in
+        link-profile) printf '%s\n' "$active_profile" ;;
+        link-out)     printf '%s\n' "$(abs_path "$target")" ;;
+        broken)       printf '%s (broken symlink -> %s)\n' "$target" "$target_link" ;;
+        regular)      printf '%s (regular file, not managed symlink)\n' "$target" ;;
+        absent)       printf 'none\n' ;;
+      esac
+      exit 0
+    fi
+
+    pretty_kv() { printf '  %b%-8s%b : %s\n' "$C_DIM" "$1" "$C_RESET" "$2"; }
+    scope_disp="$scope"
+    [[ $scope_auto -eq 1 ]] && scope_disp="${scope} ${C_DIM}(auto-detected from PWD)${C_RESET}"
+    case "$target_state" in
+      link-profile)
+        resolved=$(abs_path "$target")
+        size=$(fmt_size "$(file_size "$resolved")")
+        mtime=$(file_mtime "$resolved")
+        json=$(json_status "$resolved")
+        if [[ "$json" == valid ]]; then json_disp="${C_GREEN}valid${C_RESET}"; else json_disp="${C_RED}invalid${C_RESET}"; fi
+        pretty_kv 'profile' "${C_GREEN}${C_BOLD}${active_profile}${C_RESET}"
+        pretty_kv 'target'  "$(tilde_path "$target")"
+        pretty_kv 'link'    "symlink -> $(tilde_path "$resolved")"
+        pretty_kv 'size'    "$size"
+        pretty_kv 'mtime'   "$mtime"
+        pretty_kv 'json'    "$json_disp"
+        pretty_kv 'scope'   "$scope_disp"
+        ;;
+      link-out)
+        resolved=$(abs_path "$target")
+        pretty_kv 'profile' "${C_YELLOW}<external symlink>${C_RESET}"
+        pretty_kv 'target'  "$(tilde_path "$target")"
+        pretty_kv 'link'    "symlink -> $(tilde_path "$resolved")"
+        pretty_kv 'scope'   "$scope_disp"
+        ;;
+      broken)
+        pretty_kv 'profile' "${C_RED}broken symlink${C_RESET}"
+        pretty_kv 'target'  "$(tilde_path "$target")"
+        pretty_kv 'link'    "-> $target_link (missing)"
+        pretty_kv 'scope'   "$scope_disp"
+        ;;
+      regular)
+        pretty_kv 'profile' "${C_YELLOW}unmanaged regular file${C_RESET}"
+        pretty_kv 'target'  "$(tilde_path "$target")"
+        pretty_kv 'hint'    "register it: cc-switch add <name> $(tilde_path "$target")"
+        pretty_kv 'scope'   "$scope_disp"
+        ;;
+      absent)
+        pretty_kv 'profile' "${C_DIM}none${C_RESET}"
+        pretty_kv 'target'  "$(tilde_path "$target")"
+        pretty_kv 'scope'   "$scope_disp"
+        ;;
+    esac
+    ;;
+
+  use)
+    [[ $# -eq 1 || $# -eq 2 ]] || { echo 'Usage: cc-switch use <profile> | cc-switch use <profile> <settings.json|profile-name> | cc-switch use <settings.json>' >&2; exit 2; }
+    mkdir -p "$(dirname "$target")"
+
+    imported=0
+    if [[ $# -eq 1 ]]; then
+      arg=$1
+      if [[ "$arg" != */* && "$arg" != *.json && -f "${profiles}/${arg}.json" ]]; then
+        profile=$arg
+        src=${profiles}/${profile}.json
+      else
+        src=$(source_from_arg "$arg") || { echo "Settings file or profile not found: $arg" >&2; exit 1; }
+        profile=$(profile_name_from_file "$src")
+      fi
+    else
+      profile=$1
+      src=$(source_from_arg "$2") || { echo "Settings file or profile not found: $2" >&2; exit 1; }
+    fi
+
+    [[ "$profile" != *'/'* && "$profile" != *'.'* ]] || { echo 'Profile name must not contain / or .' >&2; exit 2; }
+    json_check "$src" || { echo "Invalid JSON: $src" >&2; exit 1; }
+
+    mkdir -p "$profiles"
+    dest=${profiles}/${profile}.json
+    import_src=''
+    if [[ "$(abs_path "$src")" != "$(abs_path "$dest")" ]]; then
+      import_src=$src
+      cp "$src" "$dest"
+      imported=1
+    fi
+    src=$dest
+
+    if [[ -e "$target" && ! -L "$target" && "$mode" == symlink ]]; then
+      echo "Refusing to replace regular file: $target" >&2
+      echo "Move it into $profiles first with: cc-switch add <profile> $target" >&2
+      echo "Or use --copy if you intentionally want overwrite semantics." >&2
+      exit 1
+    fi
+
+    [[ $imported -eq 1 ]] && echo "Imported profile from $(tilde_path "$import_src") -> $(tilde_path "$dest")"
+    if [[ "$mode" == copy ]]; then
+      tmp=$(mktemp "${target}.tmp.XXXXXX")
+      cp "$src" "$tmp"
+      mv -f "$tmp" "$target"
+      echo "Copied Claude settings profile: $profile -> $target"
+    else
+      ln -sfn "$(abs_path "$src")" "$target"
+      echo "Switched Claude settings profile: $profile -> $target"
+    fi
+    ;;
+
+  add)
+    [[ $# -eq 1 || $# -eq 2 ]] || { echo 'Usage: cc-switch add <profile> [settings.json|profile-name]' >&2; exit 2; }
+    mkdir -p "$profiles"
+
+    if [[ $# -eq 1 ]]; then
+      src=$(source_from_arg "$1") || { echo "Settings file or profile not found: $1" >&2; exit 1; }
+      profile=$(profile_name_from_file "$src")
+    else
+      profile=$1
+      src=$(source_from_arg "$2") || { echo "Settings file or profile not found: $2" >&2; exit 1; }
+    fi
+
+    [[ "$profile" != *'/'* && "$profile" != *'.'* ]] || { echo 'Profile name must not contain / or .' >&2; exit 2; }
+    json_check "$src" || { echo "Invalid JSON: $src" >&2; exit 1; }
+    dest=${profiles}/${profile}.json
+    if [[ "$(abs_path "$src")" != "$(abs_path "$dest")" ]]; then
+      cp "$src" "$dest"
+    fi
+    echo "Added profile: $dest"
+    ;;
+
+  path)
+    printf 'target=%s\nprofiles=%s\nmode=%s\nscope=%s\nbase=%s\n' "$target" "$profiles" "$mode" "$scope" "$base"
+    ;;
+
+  pick)
+    [[ $# -eq 0 ]] || { echo 'Usage: cc-switch pick' >&2; exit 2; }
+    classify_target
+    shopt -s nullglob
+    files=("$profiles"/*.json)
+    shopt -u nullglob
+    if [[ ${#files[@]} -eq 0 ]]; then
+      echo "No profiles in $(tilde_path "$profiles"). Use 'cc-switch use <file>' or 'cc-switch add' first." >&2
+      exit 1
+    fi
+
+    names=()
+    for file in "${files[@]}"; do
+      names+=("$(basename "$file" .json)")
+    done
+
+    # Reconstruct flags so the re-exec'd 'use' inherits the same scope/mode/paths.
+    re_args=()
+    [[ "$scope" == project ]] && re_args+=(--project)
+    [[ "$mode" == copy ]] && re_args+=(--copy)
+    [[ "$target_explicit" -eq 1 ]] && re_args+=(--target "$target")
+    [[ "$profiles_explicit" -eq 1 ]] && re_args+=(--profiles "$profiles")
+
+    pick_with_fzf() {
+      local preview_cmd
+      if command -v jq >/dev/null 2>&1; then
+        preview_cmd='jq -C . '"${profiles}"'/{}.json 2>/dev/null || cat '"${profiles}"'/{}.json'
+      else
+        preview_cmd='cat '"${profiles}"'/{}.json'
+      fi
+      printf '%s\n' "${names[@]}" | fzf \
+        --height=40% --reverse --border \
+        --prompt='profile> ' \
+        --header="cc-switch [$scope] · current: ${active_profile:-<none>}" \
+        --preview="$preview_cmd" \
+        --preview-window='right,60%,wrap'
+    }
+
+    pick_with_menu() {
+      local i=1
+      printf '%bcc-switch [%s]%b · current: %b%s%b\n' \
+        "$C_BOLD" "$scope" "$C_RESET" \
+        "$C_GREEN" "${active_profile:-<none>}" "$C_RESET" >&2
+      for n in "${names[@]}"; do
+        if [[ "$n" == "$active_profile" ]]; then
+          printf '  %b%2d) %s%b %b(current)%b\n' "$C_GREEN" "$i" "$n" "$C_RESET" "$C_DIM" "$C_RESET" >&2
+        else
+          printf '  %2d) %s\n' "$i" "$n" >&2
+        fi
+        ((i++))
+      done
+      local choice
+      printf '\nSelect [1-%d, q to quit]: ' "${#names[@]}" >&2
+      read -r choice </dev/tty || { echo >&2; return 1; }
+      [[ "$choice" =~ ^[Qq]$ || -z "$choice" ]] && return 1
+      [[ "$choice" =~ ^[0-9]+$ ]] || { echo "Invalid choice: $choice" >&2; return 1; }
+      (( choice >= 1 && choice <= ${#names[@]} )) || { echo "Out of range: $choice" >&2; return 1; }
+      printf '%s\n' "${names[$((choice - 1))]}"
+    }
+
+    if command -v fzf >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
+      chosen=$(pick_with_fzf) || { echo 'cancelled' >&2; exit 130; }
+    else
+      chosen=$(pick_with_menu) || { echo 'cancelled' >&2; exit 130; }
+    fi
+    [[ -n "$chosen" ]] || { echo 'cancelled' >&2; exit 130; }
+
+    exec "$0" "${re_args[@]}" use "$chosen"
+    ;;
+
+  *)
+    echo "Unknown command: $cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
