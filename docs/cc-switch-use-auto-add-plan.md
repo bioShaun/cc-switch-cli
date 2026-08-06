@@ -1,21 +1,21 @@
-# cc-switch: collapse `add` + `use` into one step
+# cc-switch-cli: collapse `add` + `use` into one step
 
 ## Context
 
-User finds `cc-switch add <name> <file> && cc-switch use <name>` cumbersome. Goal: extend `use` so it accepts the same argument shapes as `add` and auto-imports the profile when needed, so a single `cc-switch use …` covers the common case. `add` and `use` keep their current behavior for back-compat; the simplification is purely additive.
+User finds `cc-switch-cli add <name> <file> && cc-switch-cli use <name>` cumbersome. Goal: extend `use` so it accepts the same argument shapes as `add` and auto-imports the profile when needed, so a single `cc-switch-cli use …` covers the common case. `add` and `use` keep their current behavior for back-compat; the simplification is purely additive.
 
-End state: `cc-switch use foo.json`, `cc-switch use work ~/.claude/settings.work.json`, and `cc-switch use gpt` (when `gpt.json` lives in a known scan location but not yet in `profiles/`) all work as one command. Existing `cc-switch use <existing-profile>` continues to behave identically.
+End state: `cc-switch-cli use foo.json`, `cc-switch-cli use work ~/.claude/settings.work.json`, and `cc-switch-cli use gpt` (when `gpt.json` lives in a known scan location but not yet in `profiles/`) all work as one command. Existing `cc-switch-cli use <existing-profile>` continues to behave identically.
 
 ## Approach
 
-Single-file change in `cc-switch` plus a published copy of this plan under `docs/`. Steps are sequential within the `use` case body; step 5 (usage/help), step 6 (README), and step 7 (docs publish) are independent of 1–4 and of each other.
+Single-file change in `cc-switch-cli` plus a published copy of this plan under `docs/`. Steps are sequential within the `use` case body; step 5 (usage/help), step 6 (README), and step 7 (docs publish) are independent of 1–4 and of each other.
 
 ### 1. Loosen `use` arg count
 
 In the `use)` case (currently line 195), replace the `[[ $# -eq 1 ]]` guard with `[[ $# -eq 1 || $# -eq 2 ]]`, and update the inline usage string in the failure branch to:
 
 ```
-Usage: cc-switch use <profile> | cc-switch use <profile> <settings.json|profile-name> | cc-switch use <settings.json>
+Usage: cc-switch-cli use <profile> | cc-switch-cli use <profile> <settings.json|profile-name> | cc-switch-cli use <settings.json>
 ```
 
 ### 2. Resolve profile name + source the same way `add` does
@@ -43,7 +43,7 @@ fi
 json_check "$src" || { echo "Invalid JSON: $src" >&2; exit 1; }
 ```
 
-The fast-path branch matters: without it, `cc-switch use work` (registered profile) would route through `source_from_arg` → `resolve_named_source`, which returns `${profiles}/${profile}.json` and works, but `profile_name_from_file` strips a `settings.` prefix that the saved profile name will not have, so the round-trip is a no-op for normal names. Still, the explicit fast path keeps `use <existing>` byte-for-byte identical to today's behavior and avoids surprising rename if a user ever named a profile `settings.foo`.
+The fast-path branch matters: without it, `cc-switch-cli use work` (registered profile) would route through `source_from_arg` → `resolve_named_source`, which returns `${profiles}/${profile}.json` and works, but `profile_name_from_file` strips a `settings.` prefix that the saved profile name will not have, so the round-trip is a no-op for normal names. Still, the explicit fast path keeps `use <existing>` byte-for-byte identical to today's behavior and avoids surprising rename if a user ever named a profile `settings.foo`.
 
 ### 3. Auto-import into `profiles/` when needed
 
@@ -75,41 +75,41 @@ placed once just before the `if [[ "$mode" == copy ]]; then` block. Keep the exi
 
 In the heredoc (lines 5–37):
 
-- Replace the `cc-switch [options] use <profile>` line with three lines mirroring `add`:
+- Replace the `cc-switch-cli [options] use <profile>` line with three lines mirroring `add`:
   ```
-  cc-switch [options] use <profile>
-  cc-switch [options] use <profile> [settings.json|profile-name]
-  cc-switch [options] use <settings.json>
+  cc-switch-cli [options] use <profile>
+  cc-switch-cli [options] use <profile> [settings.json|profile-name]
+  cc-switch-cli [options] use <settings.json>
   ```
-- Append two examples to the global Examples block (after the existing `cc-switch current` line):
+- Append two examples to the global Examples block (after the existing `cc-switch-cli current` line):
   ```
-  cc-switch use ~/.claude/settings.work.json   # add + activate in one step
-  cc-switch use gpt ~/.claude/settings.gpt.json
+  cc-switch-cli use ~/.claude/settings.work.json   # add + activate in one step
+  cc-switch-cli use gpt ~/.claude/settings.gpt.json
   ```
-- Append one example to the project examples block (after `cc-switch --project use dev`):
+- Append one example to the project examples block (after `cc-switch-cli --project use dev`):
   ```
-  cc-switch --project use dev .claude/settings.dev.json
+  cc-switch-cli --project use dev .claude/settings.dev.json
   ```
 
 ### 6. Update README
 
-In `README.md`, after the existing `cc-switch use default` / `cc-switch use work` block (around line 44), insert a short Chinese section titled `## 一步切换`:
+In `README.md`, after the existing `cc-switch-cli use default` / `cc-switch-cli use work` block (around line 44), insert a short Chinese section titled `## 一步切换`:
 
 ```
 也可以一步完成 add + use：
 
 \`\`\`bash
 # 直接传 JSON 文件，profile 名自动从文件名推导
-cc-switch use ~/.claude/settings.work.json
+cc-switch-cli use ~/.claude/settings.work.json
 
 # 显式指定 profile 名 + 源文件
-cc-switch use gpt ~/.claude/settings.gpt.json
+cc-switch-cli use gpt ~/.claude/settings.gpt.json
 
 # --project 同样支持
-cc-switch --project use dev .claude/settings.dev.json
+cc-switch-cli --project use dev .claude/settings.dev.json
 \`\`\`
 
-如果对应的 profile 已存在，行为与 \`cc-switch use <name>\` 完全一致；否则会先导入到 profiles 目录再切换。
+如果对应的 profile 已存在，行为与 \`cc-switch-cli use <name>\` 完全一致；否则会先导入到 profiles 目录再切换。
 ```
 
 (Use real backticks in the file; escaped here only for plan readability.)
@@ -137,10 +137,10 @@ No other files in `docs/` are touched. Do not add a `docs/README.md` index or an
 
 ## Critical files & anchors
 
-- `cc-switch` lines 194–218 — the `use)` case; all behavior changes live here.
-- `cc-switch` lines 220–239 — the `add)` case; reference for the resolution + copy pattern being mirrored.
-- `cc-switch` lines 67–105 — `profile_name_from_file`, `resolve_named_source`, `source_from_arg`; reused as-is, no changes.
-- `cc-switch` lines 4–38 — `usage()` heredoc updated in step 5.
+- `cc-switch-cli` lines 194–218 — the `use)` case; all behavior changes live here.
+- `cc-switch-cli` lines 220–239 — the `add)` case; reference for the resolution + copy pattern being mirrored.
+- `cc-switch-cli` lines 67–105 — `profile_name_from_file`, `resolve_named_source`, `source_from_arg`; reused as-is, no changes.
+- `cc-switch-cli` lines 4–38 — `usage()` heredoc updated in step 5.
 - `README.md` lines 41–46 — insertion point for the new "一步切换" section in step 6.
 
 ## Verification
@@ -152,14 +152,14 @@ export TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude"
 printf '{"a":1}\n' > "$TMPHOME/.claude/settings.work.json"
 printf '{"a":2}\n' > "$TMPHOME/.claude/settings.gpt.json"
-HOME=$TMPHOME ./cc-switch use "$TMPHOME/.claude/settings.work.json"
-HOME=$TMPHOME ./cc-switch list           # expect: * work
-HOME=$TMPHOME ./cc-switch current        # expect: work
-HOME=$TMPHOME ./cc-switch use gpt "$TMPHOME/.claude/settings.gpt.json"
-HOME=$TMPHOME ./cc-switch list           # expect: gpt with *, work without
-HOME=$TMPHOME ./cc-switch use work       # back-compat: existing profile name
-HOME=$TMPHOME ./cc-switch current        # expect: work
-HOME=$TMPHOME ./cc-switch use nope 2>&1  # expect non-zero, "Settings file or profile not found: nope"
+HOME=$TMPHOME ./cc-switch-cli use "$TMPHOME/.claude/settings.work.json"
+HOME=$TMPHOME ./cc-switch-cli list           # expect: * work
+HOME=$TMPHOME ./cc-switch-cli current        # expect: work
+HOME=$TMPHOME ./cc-switch-cli use gpt "$TMPHOME/.claude/settings.gpt.json"
+HOME=$TMPHOME ./cc-switch-cli list           # expect: gpt with *, work without
+HOME=$TMPHOME ./cc-switch-cli use work       # back-compat: existing profile name
+HOME=$TMPHOME ./cc-switch-cli current        # expect: work
+HOME=$TMPHOME ./cc-switch-cli use nope 2>&1  # expect non-zero, "Settings file or profile not found: nope"
 ```
 
 Project-mode smoke test:
@@ -168,8 +168,8 @@ Project-mode smoke test:
 WORK=$(mktemp -d); cd "$WORK"
 mkdir -p .claude
 printf '{"x":1}\n' > .claude/settings.dev.json
-HOME=$TMPHOME /home/tcuni/cc-switch-cli/cc-switch --project use dev .claude/settings.dev.json
-HOME=$TMPHOME /home/tcuni/cc-switch-cli/cc-switch --project current   # expect: dev
+HOME=$TMPHOME /home/tcuni/cc-switch-cli/cc-switch-cli --project use dev .claude/settings.dev.json
+HOME=$TMPHOME /home/tcuni/cc-switch-cli/cc-switch-cli --project current   # expect: dev
 ```
 
 Regular-file guard still fires:
@@ -177,9 +177,9 @@ Regular-file guard still fires:
 ```bash
 rm "$TMPHOME/.claude/settings.json" 2>/dev/null || true
 printf '{"y":1}\n' > "$TMPHOME/.claude/settings.json"   # plain file, not symlink
-HOME=$TMPHOME ./cc-switch use "$TMPHOME/.claude/settings.work.json" 2>&1
+HOME=$TMPHOME ./cc-switch-cli use "$TMPHOME/.claude/settings.work.json" 2>&1
 # expect non-zero exit, "Refusing to replace regular file"
-HOME=$TMPHOME ./cc-switch --copy use "$TMPHOME/.claude/settings.work.json"
+HOME=$TMPHOME ./cc-switch-cli --copy use "$TMPHOME/.claude/settings.work.json"
 # expect success, settings.json now contains {"a":1}
 ```
 
@@ -187,13 +187,13 @@ Docs publish check (covers step 7):
 
 ```bash
 test -f docs/cc-switch-use-auto-add-plan.md && echo OK   # expect: OK
-head -1 docs/cc-switch-use-auto-add-plan.md              # expect: # cc-switch: collapse `add` + `use` into one step
+head -1 docs/cc-switch-use-auto-add-plan.md              # expect: # cc-switch-cli: collapse `add` + `use` into one step
 ```
 
 Cleanup: `rm -rf "$TMPHOME" "$WORK"`.
 
 ## Assumptions & contingencies
 
-- Auto-import overwrites an existing profile of the same name without prompting (matches `add`'s current behavior — `cp` over `dest`). If reality is that the user expects a confirmation, the fix is to add an `[[ -f $dest ]] && { echo "Profile $profile already exists; refusing to overwrite. Use 'cc-switch add' explicitly." >&2; exit 1; }` guard before the `cp`; do not add this preemptively.
+- Auto-import overwrites an existing profile of the same name without prompting (matches `add`'s current behavior — `cp` over `dest`). If reality is that the user expects a confirmation, the fix is to add an `[[ -f $dest ]] && { echo "Profile $profile already exists; refusing to overwrite. Use 'cc-switch-cli add' explicitly." >&2; exit 1; }` guard before the `cp`; do not add this preemptively.
 - `add` is kept as-is. No deprecation, no alias, no message nudging users toward `use`. The two-command flow remains valid for users who want to register profiles without activating them.
 - The `imported` notice is printed to stdout (not stderr) so scripts capturing output see a stable two-line block when an import happens. If a caller depends on single-line output, they were already coupled to the exact wording and will need to update regardless.

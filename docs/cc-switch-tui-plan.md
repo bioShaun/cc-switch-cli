@@ -1,4 +1,4 @@
-# cc-switch TUI 方案 (v2)
+# cc-switch-cli TUI 方案 (v2)
 
 > 参考 [`farion1231/cc-switch`](https://github.com/farion1231/cc-switch) 的功能模型（Tauri 桌面 app），把它的核心抽象搬到 TUI 形态：**Provider / Preset / Tool**。本仓库不做 Skills、Sessions、Proxy、Tray、Cloud Sync、Deep Link、MCP 的 GUI，只做"管 provider + 切换 + 编辑模型映射"。
 
@@ -19,11 +19,11 @@
 
 ### 1.3 与现 CLI 的关系
 
-现 `cc-switch` bash 脚本的"profile = JSON 文件"模型与新的 Provider 模型不再 1:1 兼容。处置：
+现 `cc-switch-cli` bash 脚本的"profile = JSON 文件"模型与新的 Provider 模型不再 1:1 兼容。处置：
 
-- **新二进制 `cc-switch` 接管所有功能**（CLI + TUI）。
-- bash 脚本旧子命令的 plain 输出仍保留字节级兼容，但语义上变成"操作 Claude Code provider"的薄壳——`cc-switch list` 列 Claude Code provider，`cc-switch use <name>` 切换 Claude Code provider。
-- 提供 `cc-switch import-legacy`，扫 `~/.claude/profiles/*.json` + `./.claude/profiles/*.json`，按文件名生成 Claude Code provider，一次性迁移。迁完后旧目录不再被读写。
+- **新二进制 `cc-switch-cli` 接管所有功能**（CLI + TUI）。
+- bash 脚本旧子命令的 plain 输出仍保留字节级兼容，但语义上变成"操作 Claude Code provider"的薄壳——`cc-switch-cli list` 列 Claude Code provider，`cc-switch-cli use <name>` 切换 Claude Code provider。
+- 提供 `cc-switch-cli import-legacy`，扫 `~/.claude/profiles/*.json` + `./.claude/profiles/*.json`，按文件名生成 Claude Code provider，一次性迁移。迁完后旧目录不再被读写。
 - 旧 `--project` 语义保留：project scope 视作"作用域 = 当前 PWD"，写到 `./.cc-switch/providers.json`（或就地写 `./.claude/...` live config，不维护项目级 SSOT；详见 §6.4）。
 
 ## 2. 技术栈
@@ -148,15 +148,15 @@ P0 内置 preset（最小集，覆盖痛点 1）：
 | `codex-custom` | Codex | (空，用户填) | 自定义 model_provider |
 | `deepseek-codex` | Codex | DeepSeek endpoint | model_provider 模板 |
 
-P1 再开放 `cc-switch preset import <file.json>` 让用户增 custom preset；存到 `~/.cc-switch/custom-presets.json`。
+P1 再开放 `cc-switch-cli preset import <file.json>` 让用户增 custom preset；存到 `~/.cc-switch/custom-presets.json`。
 
 ## 4. 用户入口
 
 ```
-cc-switch [global flags] <subcommand> [args]
+cc-switch-cli [global flags] <subcommand> [args]
 
 subcommands:
-  ui                                 启动 TUI（默认；裸跑 cc-switch 等价 cc-switch ui）
+  ui                                 启动 TUI（默认；裸跑 cc-switch-cli 等价 cc-switch-cli ui）
   list [--tool claude|codex|all]    plain 文本列出 provider
   use <name|id> [--tool …]           按名字 / id 切换
   current [--tool …]                 显示当前 active
@@ -180,7 +180,7 @@ subcommands:
 五个屏幕，`1`-`5` 切换；`?` 全局帮助；`q` 退出（带未保存修改时弹确认）。
 
 ```
-┌─ cc-switch ─────── tool: Claude Code · scope: user (auto) ─┐
+┌─ cc-switch-cli ─────── tool: Claude Code · scope: user (auto) ─┐
 │ [1] Providers  [2] Editor  [3] Models  [4] Diff  [5] Tools │
 ├──────────────────────────────────────────────────────────────┤
 │                          screen body                         │
@@ -285,7 +285,7 @@ Codex 的 Editor 同结构，Models 段字段不同（见 §3.2），Endpoint �
 - `Enter` 切换工具（其他屏的列表跟着换）。
 - 在某工具行按 `i` 触发 init（创建 live config 目录、写一份 minimal config）。
 - 按 `o` 打开该工具 live config 所在目录（调 `xdg-open`/`open`，缺则提示）。
-- 显示"是否被 cc-switch 管理"——live 文件里有没有 `_cc_switch` 标记。
+- 显示"是否被 cc-switch-cli 管理"——live 文件里有没有 `_cc_switch` 标记。
 
 ## 6. 数据存储
 
@@ -317,9 +317,9 @@ Codex 的 Editor 同结构，Models 段字段不同（见 §3.2），Endpoint �
 
 ### 6.3 旧 `~/.claude/profiles/` 处置
 
-- `cc-switch import-legacy`：扫目录、JSON parse、按文件名生成 Claude Code provider 写进 SSOT，**不动原文件**。
-- 迁移完成后旧目录冻结：`cc-switch list / use / add` 都走 SSOT，不再读 `profiles/`。
-- 给一条逃生口：`cc-switch export-legacy --dir ~/.claude/profiles` 把所有 Claude Code provider 反向落成 JSON，便于卸载或回滚到旧 bash 脚本。
+- `cc-switch-cli import-legacy`：扫目录、JSON parse、按文件名生成 Claude Code provider 写进 SSOT，**不动原文件**。
+- 迁移完成后旧目录冻结：`cc-switch-cli list / use / add` 都走 SSOT，不再读 `profiles/`。
+- 给一条逃生口：`cc-switch-cli-cli export-legacy --dir ~/.claude/profiles` 把所有 Claude Code provider 反向落成 JSON，便于卸载或回滚到旧 bash 脚本。
 
 ### 6.4 project scope
 
@@ -333,7 +333,7 @@ Codex 的 Editor 同结构，Models 段字段不同（见 §3.2），Endpoint �
 cc-switch-cli/
   Cargo.toml                       # workspace
   rust-toolchain.toml
-  cc-switch                        # 旧 bash 脚本，迁移完成后删
+  cc-switch-cli                        # 旧 bash 脚本，迁移完成后删
   crates/
     cc-switch-core/
       Cargo.toml                   # serde / serde_json / toml / indexmap / tempfile / fs2 / secrecy / uuid / thiserror
@@ -351,7 +351,7 @@ cc-switch-cli/
           presets/                 # const Preset 数组，按 category 分文件
           model_fields.rs
         diff.rs
-    cc-switch/                     # 二进制：CLI + TUI
+    cc-switch-cli/                     # 二进制：CLI + TUI
       Cargo.toml                   # 上 + clap / ratatui / crossterm / tui-input / tui-textarea / similar / anyhow
       src/
         main.rs
@@ -383,8 +383,8 @@ cc-switch-cli/
 ### 8.2 CLI legacy 兼容
 
 - `import-legacy`：fixture `~/.claude/profiles/{work,gpt}.json` → 跑迁移 → SSOT 含两个 Claude Code provider，name 与文件名一致。
-- 迁移后 `cc-switch list --plain` 输出与旧 bash `cc-switch list --plain` 在"name 列出顺序 + active 标记"维度等价（不强求字节相等，因为 plain 现在多列；新增 `cc-switch list --plain --legacy` 输出 strict 旧格式）。
-- `cc-switch use <name>` 行为：切到对应 provider，settings.json 内容等价于旧 `~/.claude/profiles/<name>.json`（render 模板对 import-legacy 出来的 provider 是恒等）。
+- 迁移后 `cc-switch-cli list --plain` 输出与旧 bash `cc-switch-cli list --plain` 在"name 列出顺序 + active 标记"维度等价（不强求字节相等，因为 plain 现在多列；新增 `cc-switch list --plain --legacy` 输出 strict 旧格式）。
+- `cc-switch-cli use <name>` 行为：切到对应 provider，settings.json 内容等价于旧 `~/.claude/profiles/<name>.json`（render 模板对 import-legacy 出来的 provider 是恒等）。
 
 ### 8.3 TUI 端到端（`ratatui::backend::TestBackend` + crossterm event 注入）
 
@@ -400,7 +400,7 @@ cc-switch-cli/
 
 | 阶段 | 范围 | 退出条件 |
 |---|---|---|
-| **P0** Cargo workspace + core 骨架 | crate 拆分、`Provider` / `Preset` / `ToolAdapter` trait、`ClaudeCodeAdapter` 渲染 + backfill、SSOT 读写 + 锁 + backup | `cargo test -p cc-switch-core` 全绿；`cc-switch import-legacy` 能跑通 |
+| **P0** Cargo workspace + core 骨架 | crate 拆分、`Provider` / `Preset` / `ToolAdapter` trait、`ClaudeCodeAdapter` 渲染 + backfill、SSOT 读写 + 锁 + backup | `cargo test -p cc-switch-core` 全绿；`cc-switch-cli import-legacy` 能跑通 |
 | **P1** CLI 子命令 | `list / current / use / add / rm / path / export / import / pick / import-legacy`；保留 `--plain --legacy` 与旧脚本字节兼容 | §8.2 全绿 |
 | **P2** TUI Providers + Editor + 切换 | preset 选择 modal、表单、`Ctrl-S` 落盘、`Enter` switch；token mask + clipboard | §8.3 用例 1-4 |
 | **P3** Models 屏 + Diff 屏 | 模型映射表格编辑、对象层级 diff | §8.3 用例 5、Diff 手测 |
@@ -414,7 +414,7 @@ P0–P2 是 MVP：Claude Code 一个工具、preset → 表单 → 切换闭环�
 
 - **Codex live config schema 漂移**：Codex CLI 仍在快速演进，`config.toml` 字段会变。对策：`CodexAdapter::render` 输出最小集（`model_provider` / `model` / `model_reasoning_effort`），其它字段从 backfill 来的 `extras` 原样透传；adapter 不假装理解全部 schema。
 - **Preset 清单维护成本**：内置 preset 写死，endpoint / 默认模型变了要发版。对策：preset 数据用版本号标记（`preset.version`），TUI 启动时若发现 SSOT 里某 provider 的 `preset_id` 在新版本 endpoint 已变，状态栏提示"preset updated, re-pick to refresh"，不强行覆盖用户改动。custom preset (`~/.cc-switch/custom-presets.json`) 让用户自维护。
-- **shared snippet 越界**：Claude Code 的 `hooks` / `agents` / `mcpServers` 字段语义是 Claude 决定的，cc-switch 只搬运不解释。对策：snippet 整段以 `serde_json::Value` 存，渲染时浅合并到目标 provider 的 extras，不做字段级 diff/校验。
+- **shared snippet 越界**：Claude Code 的 `hooks` / `agents` / `mcpServers` 字段语义是 Claude 决定的，cc-switch-cli 只搬运不解释。对策：snippet 整段以 `serde_json::Value` 存，渲染时浅合并到目标 provider 的 extras，不做字段级 diff/校验。
 - **token 落盘明文**：与 farion1231/cc-switch 一致选择。要做加密的话，引入 `keyring` crate（系统钥匙串）作为可选后端，不在 P0–P6 范围。
 - **二进制大小**：ratatui + crossterm + clap + serde + similar 估约 4–6 MB stripped。可接受。LTO + `panic=abort` 进一步压。
 - **A 纯 bash / B Python 备选**：v1 已论证否决，新模型（结构化 Provider + TOML + 表单）让 bash 更不可行；Python + Textual 可做但仍受 v1 §2 列出的所有缺点约束，且 Provider 结构化 + TOML 让 `serde` 比 Python 的同等代码量优势更明显。结论不变。

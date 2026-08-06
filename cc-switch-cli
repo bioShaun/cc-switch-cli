@@ -3,18 +3,18 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-cc-switch: switch Claude Code settings profiles
+cc-switch-cli: switch Claude Code settings profiles
 
 Usage:
-  cc-switch [options] list
-  cc-switch [options] current
-  cc-switch [options] use <profile>
-  cc-switch [options] use <profile> [settings.json|profile-name]
-  cc-switch [options] use <settings.json>
-  cc-switch [options] add <profile> [settings.json|profile-name]
-  cc-switch [options] add <settings.json>
-  cc-switch [options] pick
-  cc-switch [options] path
+  cc-switch-cli [options] list
+  cc-switch-cli [options] current
+  cc-switch-cli [options] use <profile>
+  cc-switch-cli [options] use <profile> [settings.json|profile-name]
+  cc-switch-cli [options] use <settings.json>
+  cc-switch-cli [options] add <profile> [settings.json|profile-name]
+  cc-switch-cli [options] add <settings.json>
+  cc-switch-cli [options] pick
+  cc-switch-cli [options] path
 
 Options:
   --project              Force project scope (./.claude/...)  — auto-selected when PWD has .claude/profiles/ or .claude/settings.local.json
@@ -27,24 +27,24 @@ Options:
   -h, --help             Show this help
 
 Examples:
-  cc-switch use ~/.claude/settings.work.json    # add + activate in one step
-  cc-switch use gpt ~/.claude/settings.gpt.json # explicit profile name + source
-  cc-switch use work                            # switch to an already-imported profile
-  cc-switch list
-  cc-switch current
-  cc-switch pick                                # interactive picker (fzf if available)
+  cc-switch-cli use ~/.claude/settings.work.json    # add + activate in one step
+  cc-switch-cli use gpt ~/.claude/settings.gpt.json # explicit profile name + source
+  cc-switch-cli use work                            # switch to an already-imported profile
+  cc-switch-cli list
+  cc-switch-cli current
+  cc-switch-cli pick                                # interactive picker (fzf if available)
 
   # Register a profile without activating it
-  cc-switch add default ~/.claude/settings.default.json
-  cc-switch add gpt                             # auto-discover from known locations
-  cc-switch add ~/.claude/settings.gpt.json     # name derived from filename
+  cc-switch-cli add default ~/.claude/settings.default.json
+  cc-switch-cli add gpt                             # auto-discover from known locations
+  cc-switch-cli add ~/.claude/settings.gpt.json     # name derived from filename
 
 Project-local examples:
-  cc-switch --project use dev .claude/settings.dev.json   # add + activate
-  cc-switch --project use dev                             # switch by name
-  cc-switch --project add prod .claude/settings.prod.json
-  cc-switch --project add prod work                       # import from another profile name
-  cc-switch --project current
+  cc-switch-cli --project use dev .claude/settings.dev.json   # add + activate
+  cc-switch-cli --project use dev                             # switch by name
+  cc-switch-cli --project add prod .claude/settings.prod.json
+  cc-switch-cli --project add prod work                       # import from another profile name
+  cc-switch-cli --project current
 USAGE
 }
 
@@ -434,7 +434,7 @@ case "$cmd" in
       regular)
         pretty_kv 'profile' "${C_YELLOW}unmanaged regular file${C_RESET}"
         pretty_kv 'target'  "$(tilde_path "$target")"
-        pretty_kv 'hint'    "register it: cc-switch add <name> $(tilde_path "$target")"
+        pretty_kv 'hint'    "register it: cc-switch-cli add <name> $(tilde_path "$target")"
         pretty_kv 'scope'   "$scope_disp"
         ;;
       absent)
@@ -446,7 +446,7 @@ case "$cmd" in
     ;;
 
   use)
-    [[ $# -eq 1 || $# -eq 2 ]] || { echo 'Usage: cc-switch use <profile> | cc-switch use <profile> <settings.json|profile-name> | cc-switch use <settings.json>' >&2; exit 2; }
+    [[ $# -eq 1 || $# -eq 2 ]] || { echo 'Usage: cc-switch-cli use <profile> | cc-switch-cli use <profile> <settings.json|profile-name> | cc-switch-cli use <settings.json>' >&2; exit 2; }
     mkdir -p "$(dirname "$target")"
 
     imported=0
@@ -479,7 +479,7 @@ case "$cmd" in
 
     if [[ -e "$target" && ! -L "$target" && "$mode" == symlink ]]; then
       echo "Refusing to replace regular file: $target" >&2
-      echo "Move it into $profiles first with: cc-switch add <profile> $target" >&2
+      echo "Move it into $profiles first with: cc-switch-cli add <profile> $target" >&2
       echo "Or use --copy if you intentionally want overwrite semantics." >&2
       exit 1
     fi
@@ -497,7 +497,7 @@ case "$cmd" in
     ;;
 
   add)
-    [[ $# -eq 1 || $# -eq 2 ]] || { echo 'Usage: cc-switch add <profile> [settings.json|profile-name]' >&2; exit 2; }
+    [[ $# -eq 1 || $# -eq 2 ]] || { echo 'Usage: cc-switch-cli add <profile> [settings.json|profile-name]' >&2; exit 2; }
     mkdir -p "$profiles"
 
     if [[ $# -eq 1 ]]; then
@@ -522,13 +522,13 @@ case "$cmd" in
     ;;
 
   pick)
-    [[ $# -eq 0 ]] || { echo 'Usage: cc-switch pick' >&2; exit 2; }
+    [[ $# -eq 0 ]] || { echo 'Usage: cc-switch-cli pick' >&2; exit 2; }
     classify_target
     shopt -s nullglob
     files=("$profiles"/*.json)
     shopt -u nullglob
     if [[ ${#files[@]} -eq 0 ]]; then
-      echo "No profiles in $(tilde_path "$profiles"). Use 'cc-switch use <file>' or 'cc-switch add' first." >&2
+      echo "No profiles in $(tilde_path "$profiles"). Use 'cc-switch-cli use <file>' or 'cc-switch-cli add' first." >&2
       exit 1
     fi
 
@@ -554,14 +554,14 @@ case "$cmd" in
       printf '%s\n' "${names[@]}" | fzf \
         --height=40% --reverse --border \
         --prompt='profile> ' \
-        --header="cc-switch [$scope] · current: ${active_profile:-<none>}" \
+        --header="cc-switch-cli [$scope] · current: ${active_profile:-<none>}" \
         --preview="$preview_cmd" \
         --preview-window='right,60%,wrap'
     }
 
     pick_with_menu() {
       local i=1
-      printf '%bcc-switch [%s]%b · current: %b%s%b\n' \
+      printf '%bcc-switch-cli [%s]%b · current: %b%s%b\n' \
         "$C_BOLD" "$scope" "$C_RESET" \
         "$C_GREEN" "${active_profile:-<none>}" "$C_RESET" >&2
       for n in "${names[@]}"; do
